@@ -1,0 +1,1345 @@
+{
+  "name": "WhatsApp Inventory Stock Collection Bot - final(date)",
+  "nodes": [
+    {
+      "parameters": {
+        "multipleMethods": true,
+        "path": "whatsapp-incoming",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c5193c45-6f92-4052-a19b-aa7310c234ea",
+      "name": "Meta Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -3360,
+        816
+      ],
+      "alwaysOutputData": true,
+      "webhookId": "43d2ec75-9e3e-4280-a6b1-4a08b071d5ed"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT phone_number, current_step, data, last_updated, EXTRACT(EPOCH FROM (NOW() - last_updated)) as seconds_since_update FROM conversation_states WHERE phone_number = '{{ $json.body.entry[0].changes[0].value.messages[0].from }}' LIMIT 1;",
+        "options": {}
+      },
+      "id": "b1ee9013-3def-4bc5-b9f9-11bd4c4a3107",
+      "name": "Load Conversation State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2080,
+        912
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawPrev = $('Load Conversation State').first()?.json;\nconst prevStateItem =\n  rawPrev && typeof rawPrev === \"object\" && Object.keys(rawPrev).length > 0 && rawPrev.phone_number\n    ? rawPrev\n    : null;\n// Extract phone number early for session expiration handling\nconst webhookData = $('Meta Webhook Trigger').first().json;\nconst msg = webhookData.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];\nconst phoneNumber = msg?.from\n  ? (msg.from || '').replace(/\\D/g, '')\n  : (webhookData.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.wa_id || 'test').replace(/\\D/g, '');\n// ==================== WHATSAPP INCOMING MESSAGE PARSER WITH BUTTON SUPPORT ====================\n// Fallback when no message detected\nif (!msg) {\n  return [{\n    json: {\n      phoneNumber,\n      nextQuestion: '👋 Welcome! Please send a message to start the conversation.',\n      buttons: null,\n      listOptions: null,\n      isComplete: false,\n      currentStep: 'askEmployee',\n      stateToSave: {\n        phoneNumber,\n        currentStep: 'askEmployee',\n        data: { employeeName: null, hq: null, zone: null, area: null, selectedDate: null, products: [], _hasOverwrittenProducts: false },\n        lastUpdated: new Date().toISOString()\n      }\n    }\n  }];\n}\n// Extract message text from possible WhatsApp formats\nconst messageText = (\n  msg.text?.body ||\n  msg.button?.text ||\n  msg.interactive?.button_reply?.title ||\n  msg.interactive?.list_reply?.title ||\n  ''\n).trim();\n// ==================== LOAD STATE FROM PREVIOUS NODE (stateToSave) ====================\nconst incoming = $json;\nconst incomingState = incoming.stateToSave && incoming.stateToSave.data\n  ? incoming.stateToSave\n  : null;\n// ==================== INITIAL STATE DECISION ====================\nlet state;\nif (prevStateItem) {\n  // Continue previously saved DB state\n  state = {\n    phoneNumber,\n    currentStep: prevStateItem.current_step || 'askEmployee',\n    data: typeof prevStateItem.data === 'string'\n      ? JSON.parse(prevStateItem.data)\n      : (prevStateItem.data || {}),\n    lastUpdated: new Date().toISOString()\n  };\n  // Ensure _hasOverwrittenProducts flag exists\n  if (state.data._hasOverwrittenProducts === undefined) {\n    state.data._hasOverwrittenProducts = false;\n  }\n  // Ensure selectedDate exists\n  if (state.data.selectedDate === undefined) {\n    state.data.selectedDate = null;\n  }\n}\n// ⭐ FIX: Only treat as existing user if employeeName exists\nelse if (incomingState && incomingState.data?.employeeName) {\n  state = {\n    phoneNumber,\n    currentStep: incomingState.currentStep,\n    data: incomingState.data,\n    lastUpdated: new Date().toISOString()\n  };\n  // Ensure _hasOverwrittenProducts flag exists\n  if (state.data._hasOverwrittenProducts === undefined) {\n    state.data._hasOverwrittenProducts = false;\n  }\n  // Ensure selectedDate exists\n  if (state.data.selectedDate === undefined) {\n    state.data.selectedDate = null;\n  }\n  // Return welcome message WITHOUT consuming the first reply\n  return [{\n    json: {\n      phoneNumber,\n      nextQuestion: incoming.nextQuestion,\n      buttons: incoming.buttons,\n      listOptions: incoming.listOptions,\n      isComplete: false,\n      currentStep: state.currentStep,\n      stateToSave: state\n    }\n  }];\n}\nelse {\n  // Brand new user\n  state = {\n    phoneNumber,\n    currentStep: 'askEmployee',\n    data: { employeeName: null, hq: null, zone: null, area: null, selectedDate: null, products: [], _hasOverwrittenProducts: false },\n    lastUpdated: new Date().toISOString()\n  };\n  return [{\n    json: {\n      phoneNumber,\n      nextQuestion: \"👋 Welcome! Let's begin.\\nPlease enter your employee Name ✍️\",\n      buttons: null,\n      listOptions: null,\n      isComplete: false,\n      currentStep: 'askEmployee',\n      stateToSave: state\n    }\n  }];\n}\n// Helper\nfunction normalize(str) { return (str || '').toString().trim().replace(/[^a-zA-Z0-9\\s.-]/g, ''); }\n// ==================== PRODUCT CATALOG ====================\nconst productCatalog = {\n  PBS: { 'MEGAFOL': ['0.25 L','0.5 L','1 L','5 L'], 'VIVA': ['1 L','5 L','10 L'], 'RADIFARM': ['0.25 L','0.5 L'], 'ACTIWAVE': ['0.5 L','1 L'], 'BENEFIT PZ': ['0.1 L','0.5 L','1 L'], 'MC SET': ['0.25 L','0.5 L','1 L'], 'MC EXTRA': ['0.1 Kg','0.25 Kg','0.5 Kg'], 'SWEET': ['1 L'], 'YIELD ON': ['0.5 L','1 L'], 'KENDAL ROOT': ['1 L','5 L'], 'TALETE': ['1 L','5 L'], 'RETROSAL': ['1 L'] },\n  MIC: { 'FERRILENE': ['0.5 Kg'], 'EDTA Zn': ['0.25 Kg','0.5 Kg'], 'CALBIT C': ['0.5 L','1 L','5 L'], 'BREXIL PLUS': ['0.25 Kg','1 Kg','5 Kg'], 'BOROPLUS AGRI': ['0.5 L'] },\n  WSF: { 'Plantafol 20.20.20': ['0.5 Kg','1 Kg','5 Kg'], 'Plantafol 30.10.10': ['1 Kg','5 Kg'], 'Plantafol 05.15.45': ['1 Kg','5 Kg'], 'Plantafol 10.54.10': ['1 Kg','5 Kg'], 'Opifol Maturation': ['0.5 Kg','1 Kg'], 'Master 20.20.20': ['10 Kg','25 Kg'], 'Master 13.40.13': ['10 Kg','25 Kg'], 'Master 00.37.37': ['10 Kg','25 Kg'], 'Master 15.05.30': ['25 Kg'] },\n  BIOF: { 'Hyoro MY+': ['4 Kg'], 'Hyoro Plus G': ['4 Kg','24 Kg'], 'Hyoro Plus L': ['1 L'] },\n  OTHERS: { 'CONTROL DMP': ['0.1 L','0.25 L','1 L'], 'KMS': ['1 Kg','5 Kg'] }\n};\nconst productFamilies = Object.keys(productCatalog);\n// ==================== ASK FUNCTION ====================\nfunction ask(question, options = null) {\n  state.lastUpdated = new Date().toISOString();\n  const buttons = options && options.length <= 3 ? options : null;\n  let listOptions = null;\n  if (options && options.length > 3) {\n    const page = state.data.productPage || 0;\n    const start = page * 9;\n    const end = start + 9;\n    listOptions = options.slice(start, end);\n    if (end < options.length) listOptions.push(\"More Products\");\n  }\n  return [{\n    json: {\n      phoneNumber,\n      nextQuestion: question,\n      buttons,\n      listOptions,\n      isComplete: false,\n      currentStep: state.currentStep,\n      stateToSave: state\n    }\n  }];\n}\n// ==================== MAIN CONVERSATION FLOW ====================\nswitch (state.currentStep) {\n  case 'askEmployee':\n    state.data.employeeName = normalize(messageText);\n    state.currentStep = 'askHQ';\n    return ask('🏢 Please enter your Headquarter');\n  case 'askHQ':\n    state.data.hq = normalize(messageText);\n    state.currentStep = 'askZone';\n    return ask('🌍 Select your Zone:', ['SZ', 'KAZ', 'CWZ']);\n  case 'askZone':\n    const zone = normalize(messageText).toUpperCase();\n    if (!['SZ', 'KAZ', 'CWZ'].includes(zone))\n      return ask('❗ Invalid zone. Please select:', ['SZ', 'KAZ', 'CWZ']);\n    state.data.zone = zone;\n    state.currentStep = 'askArea';\n    return ask(`📌 Select Area for ${zone}:`,\n      { SZ: ['TG-CAP','RYL CAP','TN1','TNKL'], KAZ: ['KA1','KA2'], CWZ:['MH1','MH2','MH3','GJ','MP','CG'] }[zone]\n    );\n  case 'askArea':\n    const rawArea = normalize(messageText).toUpperCase();\n    const validAreas = { SZ: ['TG-CAP','RYL CAP','TN1','TNKL'], KAZ: ['KA1','KA2'], CWZ:['MH1','MH2','MH3','GJ','MP','CG'] }[state.data.zone];\n    const area = validAreas.find(a => a.replace(/[^A-Z0-9]/g, '') === rawArea.replace(/[^A-Z0-9]/g, ''));\n    if (!area)\n      return ask(`❗ Invalid area for ${state.data.zone}. Please select:`, validAreas);\n    state.data.area = area;\n   \n    // Check if this is a new user by checking if incomingState has employeeName\n    const isExistingUser = incomingState && incomingState.data?.employeeName;\n   \n    if (!isExistingUser) {\n      // New user - show profile confirmation\n      state.currentStep = 'askProfileConfirmation';\n      return ask(\n        `📋 Please confirm your profile details:\\n\\n` +\n        `👤 Name: ${state.data.employeeName}\\n` +\n        `🏢 Headquarter: ${state.data.hq}\\n` +\n        `🌍 Zone: ${state.data.zone}\\n` +\n        `📍 Area: ${state.data.area}\\n\\n` +\n        `Is this information correct?`,\n        ['Confirm', 'Update Profile']\n      );\n    } else {\n      // Existing user - proceed to date selection\n      state.currentStep = 'askDateSelection';\n      return ask('📅 Select the date for this record:', ['Today', 'Yesterday', 'Custom Date']);\n    }\n  case 'askProfileConfirmation':\n    const confirmResponse = normalize(messageText).toLowerCase();\n   \n    if (confirmResponse.includes('confirm')) {\n      state.currentStep = 'askDateSelection';\n      return ask('📅 Select the date for this record:', ['Today', 'Yesterday', 'Custom Date']);\n    } else if (confirmResponse.includes('update')) {\n      state.data.employeeName = null;\n      state.data.hq = null;\n      state.data.zone = null;\n      state.data.area = null;\n      state.currentStep = 'askEmployee';\n      return ask(\"👋 Let's update your profile.\\nPlease enter your employee Name ✍️\");\n    } else {\n      return ask(\n        `📋 Please confirm your profile details:\\n\\n` +\n        `👤 Name: ${state.data.employeeName}\\n` +\n        `🏢 Headquarter: ${state.data.hq}\\n` +\n        `🌍 Zone: ${state.data.zone}\\n` +\n        `📍 Area: ${state.data.area}\\n\\n` +\n        `Is this information correct?`,\n        ['Confirm', 'Update Profile']\n      );\n    }\n  case 'askDateSelection':\n    const dateOption = normalize(messageText).toLowerCase();\n\n    if (dateOption.includes('custom')) {\n      // User selected \"Custom Date\" → show predefined past dates + manual entry\n      state.currentStep = 'askPredefinedDate';\n      const today = new Date();\n      const options = [];\n      for (let i = 2; i <= 7; i++) {\n        const past = new Date(today);\n        past.setDate(today.getDate() - i);\n        const formatted = past.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\\//g, '-');\n        options.push(formatted);\n      }\n      options.push('Enter date manually');\n      return ask('📅 Please select a past date for this record:', options);\n    } else if (dateOption.includes('yesterday') && !dateOption.includes('before')) {\n      const yesterday = new Date();\n      yesterday.setDate(yesterday.getDate() - 1);\n      state.data.selectedDate = yesterday.toISOString().split('T')[0];\n    } else if (dateOption.includes('today') || dateOption === '') {\n      state.data.selectedDate = new Date().toISOString().split('T')[0];\n    } else {\n      return ask('❗ Invalid date option. Please select:', ['Today', 'Yesterday', 'Custom Date']);\n    }\n\n    // Today or Yesterday selected → proceed\n    state.currentStep = 'askProductFamily';\n    return ask('🛍️ Select Product Family:', productFamilies);\n\n  case 'askPredefinedDate':\n    const response = normalize(messageText).toLowerCase();\n\n    const today = new Date();\n    today.setHours(0, 0, 0, 0);\n\n    // Check for manual entry\n    if (response.includes('enter') && response.includes('date') && response.includes('manual') ||\n        response.includes('manual')) {\n      state.currentStep = 'askManualDate';\n      return ask('📅 Please enter date in DD-MM-YYYY format\\n\\nExample: 25-12-2024');\n    }\n\n    // Try to match the date format DD-MM-YYYY\n    const dateMatch = messageText.match(/(\\d{2})-(\\d{2})-(\\d{4})/);\n    if (dateMatch) {\n      const day = parseInt(dateMatch[1], 10);\n      const month = parseInt(dateMatch[2], 10);\n      const year = parseInt(dateMatch[3], 10);\n      \n      const selected = new Date(year, month - 1, day);\n      \n      // Validate the date is within the expected range (2-7 days ago)\n      const diffDays = Math.floor((today - selected) / (1000 * 60 * 60 * 24));\n      \n      if (diffDays >= 2 && diffDays <= 7 && !isNaN(selected.getTime())) {\n        state.data.selectedDate = selected.toISOString().split('T')[0];\n        state.currentStep = 'askProductFamily';\n        return ask('🛍️ Select Product Family:', productFamilies);\n      }\n    }\n\n    // Invalid → repeat options\n    const repeatOptions = [];\n    for (let i = 2; i <= 7; i++) {\n      const past = new Date(today);\n      past.setDate(today.getDate() - i);\n      const formatted = past.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\\//g, '-');\n      repeatOptions.push(formatted);\n    }\n    repeatOptions.push('Enter date manually');\n    return ask('❗ Invalid selection. Please choose one of the options below:', repeatOptions);\n\n  case 'askManualDate':\n    const dateInput = normalize(messageText).replace(/[^0-9-]/g, '');\n    const dateParts = dateInput.split('-');\n   \n    if (dateParts.length !== 3) {\n      return ask('❗ Invalid format. Please enter date as DD-MM-YYYY\\n\\nExample: 25-12-2024');\n    }\n   \n    const day = parseInt(dateParts[0], 10);\n    const month = parseInt(dateParts[1], 10);\n    const year = parseInt(dateParts[2], 10);\n   \n    if (isNaN(day) || isNaN(month) || isNaN(year) || day < 1 || day > 31 || month < 1 || month > 12 || year < 2000 || year > 2100) {\n      return ask('❗ Invalid date values. Please enter a valid date in DD-MM-YYYY format\\n\\nExample: 25-12-2024');\n    }\n   \n    const customDate = new Date(year, month - 1, day);\n    const now = new Date();\n    now.setHours(0, 0, 0, 0);\n   \n    if (customDate > now) {\n      return ask('❗ Future dates are not allowed. Please enter a past or today\\'s date in DD-MM-YYYY format');\n    }\n   \n    if (isNaN(customDate.getTime())) {\n      return ask('❗ Invalid date. Please check and enter again in DD-MM-YYYY format\\n\\nExample: 25-12-2024');\n    }\n   \n    state.data.selectedDate = customDate.toISOString().split('T')[0];\n    state.currentStep = 'askProductFamily';\n    return ask('🛍️ Select Product Family:', productFamilies);\n\n  case 'askProductFamily':\n    const rawFamily = normalize(messageText).toUpperCase();\n    const family = Object.keys(productCatalog).find(f => f === rawFamily || f.replace(/[^A-Z]/g, '') === rawFamily.replace(/[^A-Z]/g, ''));\n    if (!family)\n      return ask('❗ Invalid family. Select:', productFamilies);\n    state.data._currentFamily = family;\n    state.data._currentProduct = { family };\n    state.data.productPage = 0;\n    state.currentStep = 'askProductName';\n    return ask(`📦 Select Product for ${family}:`, Object.keys(productCatalog[family]));\n  case 'askProductName':\n    if (messageText === \"More Products\") {\n      state.data.productPage = (state.data.productPage || 0) + 1;\n      return ask(`📦 Select Product for ${state.data._currentFamily}:`,\n        Object.keys(productCatalog[state.data._currentFamily])\n      );\n    }\n    const rawProductName = normalize(messageText);\n    const productName = Object.keys(productCatalog[state.data._currentFamily]).find(p => p.toLowerCase() === rawProductName.toLowerCase() || p.replace(/[^a-z0-9]/gi, '').toLowerCase() === rawProductName.replace(/[^a-z0-9]/gi, '').toLowerCase());\n    if (!productName)\n      return ask(`❗ Invalid product. Select product for ${state.data._currentFamily}:`,\n        Object.keys(productCatalog[state.data._currentFamily])\n      );\n    state.data._currentProduct.productName = productName;\n    state.currentStep = 'askSKU';\n    return ask(`📏 Select SKU for ${productName}:`,\n      productCatalog[state.data._currentFamily][productName]\n    );\n  case 'askSKU':\n    const rawSku = normalize(messageText);\n    const validSkus = productCatalog[state.data._currentFamily][state.data._currentProduct.productName];\n    const sku = validSkus.find(s => s.toLowerCase() === rawSku.toLowerCase() || s.replace(/[^a-z0-9]/gi, '').toLowerCase() === rawSku.replace(/[^a-z0-9]/gi, '').toLowerCase());\n    if (!sku)\n      return ask(`❗ Invalid SKU. Select SKU for ${state.data._currentProduct.productName}:`, validSkus);\n   \n    state.data._currentProduct.sku = sku;\n   \n    state.currentStep = 'checkProductExists';\n    state.lastUpdated = new Date().toISOString();\n   \n    return [{\n      json: {\n        phoneNumber,\n        family: state.data._currentProduct.family,\n        productName: state.data._currentProduct.productName,\n        sku: sku,\n        needsProductCheck: true,\n        isComplete: false,\n        currentStep: 'checkProductExists',\n        stateToSave: state\n      }\n    }];\n  case 'checkProductExists':\n    break;\n  case 'handleProductExistsResult':\n    const productExists = state.data._productExists;\n    \n    if (productExists) {\n      // Product already exists, ask for overwrite confirmation\n      state.currentStep = 'askOverwrite';\n      return ask(\n        `⚠️ This product already exists in today's records.\\n\\nDo you want to overwrite it?`,\n        ['Yes', 'No']\n      );\n    } else {\n      // Product doesn't exist, continue normally\n      state.currentStep = 'askOpeningStock';\n      return ask('📥 Enter Opening Stock (in numbers) 🔢');\n    }\n  case 'askOverwrite':\n    if (messageText.toLowerCase().includes('y')) {\n      // User wants to overwrite, set the flag and mark the current product\n      state.data._hasOverwrittenProducts = true;\n      state.data._currentProduct.overwritten = true;\n      // Continue to opening stock\n      state.currentStep = 'askOpeningStock';\n      return ask('📥 Enter Opening Stock (in numbers) 🔢');\n    } else {\n      // User doesn't want to overwrite, save family name before clearing\n      const savedFamily = state.data._currentProduct?.family || state.data._currentFamily;\n      delete state.data._currentProduct;\n      delete state.data._productExists;\n      // Restore the family name\n      state.data._currentFamily = savedFamily;\n      state.currentStep = 'askAnotherInFamily';\n      return ask('➕ Add another product in the SAME family?', ['Yes','No']);\n    }\n case 'askOpeningStock':\n    const opening = Number(normalize(messageText));\n\n    // ❌ Validate integer input & ensure > 0\n    if (!Number.isInteger(opening) || opening <= 0) {\n      return ask('❗ Opening Stock must be a valid number greater than 0. Please enter again 🔢');\n    }\n\n    state.data._currentProduct.openingStock = opening;\n    state.currentStep = 'askLiquidationQty';\n    return ask('📤 Enter Liquidation Quantity (in numbers) 🔢');\n\n\n  case 'askLiquidationQty':\n    const liquidation = Number(normalize(messageText));\n\n    // ❌ Validate integer input\n    if (!Number.isInteger(liquidation) || liquidation < 0) {\n      return ask('❗ Liquidation must be a valid positive number. Please enter again 🔢');\n    }\n\n    // ❌ Liquidation must be <= Opening Stock\n    if (liquidation > state.data._currentProduct.openingStock) {\n      return ask(`❌ Liquidation cannot be more than Opening Stock (${state.data._currentProduct.openingStock}). Please enter again 🔢`);\n    }\n\n    // ✔ Save valid data\n    state.data._currentProduct.liquidationQty = liquidation;\n    \n    // Check if this product was marked for overwrite and fetch initial values\n    if (state.data._productExists === true || state.data._currentProduct.overwritten === true) {\n      state.data._currentProduct.overwritten = true;\n      \n      // Fetch initial values from existing products in state\n      // Look for the product in the already saved products array\n      const existingProduct = state.data.products.find(p => \n        p.family === state.data._currentProduct.family &&\n        p.productName === state.data._currentProduct.productName &&\n        p.sku === state.data._currentProduct.sku\n      );\n      \n      if (existingProduct) {\n        // Store initial values before overwriting\n        state.data._currentProduct.initialOpeningStock = existingProduct.openingStock;\n        state.data._currentProduct.initialLiquidationQty = existingProduct.liquidationQty;\n      }\n    }\n    \n    state.data.products.push({ ...state.data._currentProduct });\n\n    delete state.data._currentProduct;\n    delete state.data._currentFamily;\n    \n    state.currentStep = 'askAnotherInFamily';\n    return ask('➕ Add another product in the SAME family?', ['Yes','No']);\n  case 'askAnotherInFamily':\n    if (messageText.toLowerCase().includes('y')) {\n      const familyToUse = state.data._currentFamily || state.data.products[state.data.products.length - 1].family;\n      state.data._currentFamily = familyToUse;\n      state.data._currentProduct = { family: familyToUse };\n      state.data.productPage = 0;\n      state.currentStep = 'askProductName';\n      return ask(`📦 Select Product for ${familyToUse}:`, Object.keys(productCatalog[familyToUse]));\n    }\n    state.currentStep = 'askAnotherFamily';\n    return ask('🔁 Add products from a DIFFERENT family?', ['Yes','No']);\n  case 'askAnotherFamily':\n    if (messageText.toLowerCase().includes('y')) {\n      state.currentStep = 'askProductFamily';\n      return ask('🛍️ Select Product Family:', productFamilies);\n    }\n    state.currentStep = 'askReviewProducts';\n   \n    const productsList = state.data.products.length\n      ? state.data.products.map((p, idx) =>\n          `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening Stock: ${p.openingStock}\\n   Liquidation: ${p.liquidationQty}`\n        ).join('\\n\\n')\n      : 'No products were added.';\n    const reviewMsg =\n      `📋 *Review Your Products*\\n\\n` +\n      `${productsList}\\n\\n` +\n      `Please review the products above. You can proceed to submit or edit any product.`;\n    return ask(reviewMsg, ['Proceed', 'Edit']);\n  case 'askReviewProducts':\n    if (messageText.toLowerCase().includes('proceed')) {\n      const finalProductsList = state.data.products.length\n        ? state.data.products.map(p =>\n            `• ${p.family} - ${p.productName} (${p.sku})\\n  Opening Stock: ${p.openingStock}\\n  Liquidation: ${p.liquidationQty}`\n          ).join('\\n\\n')\n        : 'No products were added.';\n      let summaryMsg =\n        `🎉 Stock Report Submitted Successfully!\\n\\n` +\n        `👤 Employee: ${state.data.employeeName}\\n` +\n        `🏢 HQ: ${state.data.hq}\\n` +\n        `🌍 Zone: ${state.data.zone}\\n` +\n        `📍 Area: ${state.data.area}\\n` +\n        `📅 Date: ${state.data.selectedDate}\\n\\n` +\n        `📦 Product Details:\\n${finalProductsList}\\n\\n` +\n        `🙏 Thank you! Your submission has been recorded.\\n👋 Goodbye! Have a great day!`;\n      return [{\n        json: {\n          phoneNumber,\n          isComplete: true,\n          summary: summaryMsg,\n          saveObject: {\n            employeeName: state.data.employeeName,\n            hq: state.data.hq,\n            zone: state.data.zone,\n            area: state.data.area,\n            products: state.data.products,\n            date: state.data.selectedDate,\n            lastupdated: new Date().toISOString().split('T')[0],\n            phoneNumber,\n            hasOverwrittenProducts: state.data._hasOverwrittenProducts || false,\n            selectedDate: state.data.selectedDate\n          },\n          stateToDelete: { phoneNumber }\n        }\n      }];\n    } else if (messageText.toLowerCase().includes('edit')) {\n      state.currentStep = 'askSelectProductToEdit';\n     \n      const productDetailsText = state.data.products.map((p, idx) =>\n        `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening: ${p.openingStock}, Liq: ${p.liquidationQty}`\n      ).join('\\n\\n');\n      const numProducts = state.data.products.length;\n      let buttonOptions = [];\n     \n      if (numProducts <= 3) {\n        buttonOptions = state.data.products.map((p, idx) => `${idx + 1}`);\n      } else {\n        buttonOptions = null;\n      }\n      const questionText = `✏️ *Select Product to Edit*\\n\\n${productDetailsText}\\n\\nSelect the product number:`;\n      if (buttonOptions === null) {\n        const listOptions = state.data.products.map((p, idx) => `${idx + 1}`);\n        state.lastUpdated = new Date().toISOString();\n        return [{\n          json: {\n            phoneNumber,\n            nextQuestion: questionText,\n            buttons: null,\n            listOptions: listOptions,\n            isComplete: false,\n            currentStep: state.currentStep,\n            stateToSave: state\n          }\n        }];\n      } else {\n        return ask(questionText, buttonOptions);\n      }\n    } else {\n      const productsList = state.data.products.length\n        ? state.data.products.map((p, idx) =>\n            `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening Stock: ${p.openingStock}\\n   Liquidation: ${p.liquidationQty}`\n          ).join('\\n\\n')\n        : 'No products were added.';\n      const reviewMsg =\n        `📋 *Review Your Products*\\n\\n` +\n        `${productsList}\\n\\n` +\n        `Please review the products above. You can proceed to submit or edit any product.`;\n      return ask(reviewMsg, ['Proceed', 'Edit']);\n    }\n  case 'askSelectProductToEdit':\n    const selectedIndex = parseInt(messageText.match(/\\d+/)?.[0]) - 1;\n   \n    if (selectedIndex < 0 || selectedIndex >= state.data.products.length || isNaN(selectedIndex)) {\n      const productDetailsText = state.data.products.map((p, idx) =>\n        `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening: ${p.openingStock}, Liq: ${p.liquidationQty}`\n      ).join('\\n\\n');\n      const numProducts = state.data.products.length;\n      let buttonOptions = [];\n     \n      if (numProducts <= 3) {\n        buttonOptions = state.data.products.map((p, idx) => `${idx + 1}`);\n      } else {\n        buttonOptions = null;\n      }\n      const questionText = `❗ Invalid selection. Please select a product number:\\n\\n${productDetailsText}\\n\\nSelect the product number:`;\n      if (buttonOptions === null) {\n        const listOptions = state.data.products.map((p, idx) => `${idx + 1}`);\n        state.lastUpdated = new Date().toISOString();\n        return [{\n          json: {\n            phoneNumber,\n            nextQuestion: questionText,\n            buttons: null,\n            listOptions: listOptions,\n            isComplete: false,\n            currentStep: state.currentStep,\n            stateToSave: state\n          }\n        }];\n      } else {\n        return ask(questionText, buttonOptions);\n      }\n    }\n   \n    state.data._editingProductIndex = selectedIndex;\n    state.currentStep = 'askEditFieldSelection';\n   \n    const productToEdit = state.data.products[selectedIndex];\n    return ask(\n      `✏️ *Editing Product*\\n\\n` +\n      `${productToEdit.family} - ${productToEdit.productName} (${productToEdit.sku})\\n` +\n      `Opening Stock: ${productToEdit.openingStock}\\n` +\n      `Liquidation: ${productToEdit.liquidationQty}\\n\\n` +\n      `What would you like to edit?`,\n      ['Edit Opening Stock', 'Edit Liquidation']\n    );\n  \n  case 'askEditFieldSelection':\n    const editChoice = normalize(messageText).toLowerCase();\n    \n    if (editChoice.includes('opening') || editChoice.includes('stock')) {\n      state.currentStep = 'askNewOpeningStock';\n      const editIndex = state.data._editingProductIndex;\n      const productToEdit = state.data.products[editIndex];\n      return ask(\n        `✏️ *Editing Opening Stock*\\n\\n` +\n        `${productToEdit.family} - ${productToEdit.productName} (${productToEdit.sku})\\n` +\n        `Current Opening Stock: ${productToEdit.openingStock}\\n` +\n        `Current Liquidation: ${productToEdit.liquidationQty}\\n\\n` +\n        `Enter new Opening Stock (must be ≥ ${productToEdit.liquidationQty}) 🔢`\n      );\n    } else if (editChoice.includes('liquidation') || editChoice.includes('liq')) {\n      state.currentStep = 'askNewLiquidationQty';\n      const editIndex = state.data._editingProductIndex;\n      const productToEdit = state.data.products[editIndex];\n      return ask(\n        `✏️ *Editing Liquidation Quantity*\\n\\n` +\n        `${productToEdit.family} - ${productToEdit.productName} (${productToEdit.sku})\\n` +\n        `Current Opening Stock: ${productToEdit.openingStock}\\n` +\n        `Current Liquidation: ${productToEdit.liquidationQty}\\n\\n` +\n        `Enter new Liquidation Quantity (must be ≤ ${productToEdit.openingStock}) 🔢`\n      );\n    } else {\n      const editIndex = state.data._editingProductIndex;\n      const productToEdit = state.data.products[editIndex];\n      return ask(\n        `❗ Invalid selection. Please choose one of the options:\\n\\n` +\n        `${productToEdit.family} - ${productToEdit.productName} (${productToEdit.sku})\\n` +\n        `Opening Stock: ${productToEdit.openingStock}\\n` +\n        `Liquidation: ${productToEdit.liquidationQty}\\n\\n` +\n        `What would you like to edit?`,\n        ['Edit Opening Stock', 'Edit Liquidation']\n      );\n    }\n  \n  case 'askNewOpeningStock':\n    const newOpening = Number(normalize(messageText));\n    const editIndexOpening = state.data._editingProductIndex;\n    const productBeingEdited = state.data.products[editIndexOpening];\n    \n    // Validate: must be a positive integer\n    if (!Number.isInteger(newOpening) || newOpening <= 0) {\n      return ask(\n        `❗ Opening Stock must be a valid number greater than 0.\\n\\n` +\n        `${productBeingEdited.family} - ${productBeingEdited.productName} (${productBeingEdited.sku})\\n` +\n        `Current Opening Stock: ${productBeingEdited.openingStock}\\n` +\n        `Current Liquidation: ${productBeingEdited.liquidationQty}\\n\\n` +\n        `Please enter a valid Opening Stock (must be ≥ ${productBeingEdited.liquidationQty}) 🔢`\n      );\n    }\n    \n    // Validate: must not be less than existing liquidation\n    if (newOpening < productBeingEdited.liquidationQty) {\n      return ask(\n        `❌ Opening Stock cannot be less than Liquidation Quantity (${productBeingEdited.liquidationQty}).\\n\\n` +\n        `${productBeingEdited.family} - ${productBeingEdited.productName} (${productBeingEdited.sku})\\n` +\n        `Current Opening Stock: ${productBeingEdited.openingStock}\\n` +\n        `Current Liquidation: ${productBeingEdited.liquidationQty}\\n\\n` +\n        `Please enter a valid Opening Stock (must be ≥ ${productBeingEdited.liquidationQty}) 🔢`\n      );\n    }\n    \n    // Update the opening stock\n    state.data.products[editIndexOpening].openingStock = newOpening;\n    \n    delete state.data._editingProductIndex;\n    \n    state.currentStep = 'askReviewProducts';\n    \n    const updatedProductsListOpening = state.data.products.length\n      ? state.data.products.map((p, idx) =>\n          `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening Stock: ${p.openingStock}\\n   Liquidation: ${p.liquidationQty}`\n        ).join('\\n\\n')\n      : 'No products were added.';\n    const updatedReviewMsgOpening =\n      `✅ *Opening Stock Updated Successfully!*\\n\\n` +\n      `📋 *Review Your Products*\\n\\n` +\n      `${updatedProductsListOpening}\\n\\n` +\n      `Please review the products above. You can proceed to submit or edit any product.`;\n    return ask(updatedReviewMsgOpening, ['Proceed', 'Edit']);\n  \n  case 'askNewLiquidationQty':\n    const newLiquidation = Number(normalize(messageText));\n    const editIndexLiq = state.data._editingProductIndex;\n    const productBeingEditedLiq = state.data.products[editIndexLiq];\n    \n    // Validate: must be a non-negative integer\n    if (!Number.isInteger(newLiquidation) || newLiquidation < 0) {\n      return ask(\n        `❗ Liquidation must be a valid positive number.\\n\\n` +\n        `${productBeingEditedLiq.family} - ${productBeingEditedLiq.productName} (${productBeingEditedLiq.sku})\\n` +\n        `Current Opening Stock: ${productBeingEditedLiq.openingStock}\\n` +\n        `Current Liquidation: ${productBeingEditedLiq.liquidationQty}\\n\\n` +\n        `Please enter a valid Liquidation Quantity (must be ≤ ${productBeingEditedLiq.openingStock}) 🔢`\n      );\n    }\n    \n    // Validate: must not be greater than opening stock\n    if (newLiquidation > productBeingEditedLiq.openingStock) {\n      return ask(\n        `❌ Liquidation cannot be more than Opening Stock (${productBeingEditedLiq.openingStock}).\\n\\n` +\n        `${productBeingEditedLiq.family} - ${productBeingEditedLiq.productName} (${productBeingEditedLiq.sku})\\n` +\n        `Current Opening Stock: ${productBeingEditedLiq.openingStock}\\n` +\n        `Current Liquidation: ${productBeingEditedLiq.liquidationQty}\\n\\n` +\n        `Please enter a valid Liquidation Quantity (must be ≤ ${productBeingEditedLiq.openingStock}) 🔢`\n      );\n    }\n    \n    // Update the liquidation quantity\n    state.data.products[editIndexLiq].liquidationQty = newLiquidation;\n    \n    delete state.data._editingProductIndex;\n    \n    state.currentStep = 'askReviewProducts';\n    \n    const updatedProductsListLiq = state.data.products.length\n      ? state.data.products.map((p, idx) =>\n          `${idx + 1}. ${p.family} - ${p.productName} (${p.sku})\\n   Opening Stock: ${p.openingStock}\\n   Liquidation: ${p.liquidationQty}`\n        ).join('\\n\\n')\n      : 'No products were added.';\n    const updatedReviewMsgLiq =\n      `✅ *Liquidation Quantity Updated Successfully!*\\n\\n` +\n      `📋 *Review Your Products*\\n\\n` +\n      `${updatedProductsListLiq}\\n\\n` +\n      `Please review the products above. You can proceed to submit or edit any product.`;\n    return ask(updatedReviewMsgLiq, ['Proceed', 'Edit']);\n \n}"
+      },
+      "id": "5a062023-cb90-41ce-9559-eaaa0299e8d2",
+      "name": "Conversation State Manager",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1344,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "24ce2c77-b0b5-45fa-9ce9-b6e36ebe6652",
+              "leftValue": "={{ $('Conversation State Manager').item.json.isComplete }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "57c402fb-65e5-4012-b21d-2cb569d071a7",
+      "name": "Check If Complete",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v22.0/925047117349142/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "whatsAppApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json}}",
+        "options": {}
+      },
+      "id": "13529008-2eba-44f6-a26d-9b5827651d34",
+      "name": "Send WhatsApp Message (Buttons)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        688,
+        704
+      ],
+      "credentials": {
+        "whatsAppApi": {
+          "id": "B1uopzXoRmsyAROe",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO conversation_states (phone_number, current_step, data, last_updated) \nVALUES ('{{ $json.stateToSave.phoneNumber }}', '{{ $json.stateToSave.currentStep }}', '{{ JSON.stringify($json.stateToSave.data) }}'::jsonb, NOW())\nON CONFLICT (phone_number) DO UPDATE \nSET current_step = EXCLUDED.current_step, \ndata = EXCLUDED.data, last_updated = NOW()\nRETURNING *;",
+        "options": {}
+      },
+      "id": "ffb5a38e-2a6d-4b98-93b6-b8afbb1c9927",
+      "name": "Save Conversation State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        784
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "32dfeb0e-0107-489c-8777-5a17be3686de",
+      "name": "Prepare Completion Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        0,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v22.0/925047117349142/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "whatsAppApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "e1a5dd41-4435-46ef-a0e2-e95535e3ab44",
+      "name": "Send Final Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        896,
+        384
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "whatsAppApi": {
+          "id": "B1uopzXoRmsyAROe",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=DELETE FROM conversation_states WHERE phone_number = '{{ $('Prepare Completion Message').item.json.phoneNumber }}';",
+        "options": {}
+      },
+      "id": "0055af8e-d846-4f1a-85aa-5ea884b3fa89",
+      "name": "Delete Conversation State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1120,
+        336
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('Check If Complete').first().json;\nconst phoneNumber = input.phoneNumber;\n\n// Skip if missing phone number\nif (!phoneNumber) {\n  return [];\n}\n\nconst hasButtons = input.buttons && input.buttons.length > 0;\nconst hasList = input.listOptions && input.listOptions.length > 0;\nconst messageText = input.nextQuestion || 'No message';\n\n// Build WhatsApp API payload\nconst payload = {\n  messaging_product: 'whatsapp',\n  to: phoneNumber,\n  type: hasButtons ? 'interactive' : (hasList ? 'interactive' : 'text')\n};\n\n// Add text for plain messages\nif (!hasButtons && !hasList) {\n  payload.text = { body: messageText };\n}\n\n// Add interactive buttons (max 3)\nif (hasButtons) {\n  payload.interactive = {\n    type: 'button',\n    body: { text: messageText },\n    action: {\n      buttons: input.buttons.map((btn, idx) => ({\n        type: 'reply',\n        reply: {\n          id: 'btn_' + idx,\n          title: btn\n        }\n      }))\n    }\n  };\n}\n\n// Add interactive list (4-10 options)\nif (hasList) {\n  payload.interactive = {\n    type: 'list',\n    body: { text: messageText },\n    action: {\n      button: 'Select',\n      sections: [{\n        title: 'Options',\n        rows: input.listOptions.map((opt, idx) => ({\n          id: 'opt_' + idx,\n          title: opt\n        }))\n      }]\n    }\n  };\n}\n\nreturn [{ json: payload }];"
+      },
+      "id": "c6ecdba8-0902-4c3b-b427-578e9049fc86",
+      "name": "Prepare Response Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const phoneNumber = $('Prepare Completion Message').first().json.phoneNumber || $('Prepare Completion Message').first().json.stateToDelete?.phoneNumber;\nconst recordDate = $('Prepare Completion Message').first().json.saveObject?.date;\n\nif (!phoneNumber || !recordDate) {\n  return {\n    messaging_product: 'whatsapp',\n    to: phoneNumber || 'unknown',\n    type: 'text',\n    text: { body: '❌ Missing data for summary generation.' }\n  };\n}\n\nconst summaryData = $('Fetch Summary Data').first()?.json;\nconst liquidationProducts = summaryData?.liquidation_products || [];\nconst updatedProducts = summaryData?.updated_products || [];\nconst employeeName = summaryData?.employee_name || 'N/A';\nconst hq = summaryData?.hq || 'N/A';\nconst zone = summaryData?.zone || 'N/A';\nconst area = summaryData?.area || 'N/A';\n\nif (!liquidationProducts || liquidationProducts.length === 0) {\n  return {\n    messaging_product: 'whatsapp',\n    to: phoneNumber,\n    type: 'text',\n    text: { body: ' Record saved successfully!\\n\\nNo products were recorded.' }\n  };\n}\n\nlet summaryText = ` *Record Summary*\\n\\n`;\nsummaryText += `👤 *Employee:* ${employeeName}\\n`;\nsummaryText += `🏢 *Headquarter:* ${hq}\\n`;\nsummaryText += `🌍 *Zone:* ${zone}\\n`;\nsummaryText += `📍 *Area:* ${area}\\n`;\nsummaryText += `📅 *Date:* ${recordDate}\\n\\n`;\nsummaryText += `━━━━━━━━━━━━━━━━\\n\\n`;\nsummaryText += `📊 *Liquidation Summary Report*\\n\\n`;\nsummaryText += `━━━━━━━━━━━━━━━━\\n\\n`;\n\n// ⭐ NEW — GROUP PRODUCTS BY FAMILY ⭐\nconst grouped = liquidationProducts.reduce((acc, p) => {\n  if (!acc[p.family]) acc[p.family] = [];\n  acc[p.family].push(p);\n  return acc;\n}, {});\n\n// ⭐ LOOP FAMILY-WISE ⭐\nfor (const family of Object.keys(grouped)) {\n  summaryText += `📌  ${family}\\n`;\n\n  const familyProducts = grouped[family];\n  let index = 1;\n\n  for (const product of familyProducts) {\n    const matchingUpdated = updatedProducts.find(\n      up =>\n        up.family === product.family &&\n        up.productName === product.productName &&\n        up.sku === product.sku\n    );\n\n    summaryText += `\\n${index}️⃣ *${product.productName}* (${product.sku})\\n`;\n\n    if (matchingUpdated) {\n      summaryText += `   ⚠️ *UPDATED*\\n`;\n      summaryText += `   • Opening Stock (in numbers) : ${matchingUpdated.openingStock} → ${product.openingStock}\\n`;\n      summaryText += `   • Liquidated quantity (in numbers): ${matchingUpdated.liquidationQty} → ${product.liquidationQty}\\n`;\n    } else {\n      summaryText += `   • Opening Stock (in numbers): ${product.openingStock}\\n`;\n      summaryText += `   • Liquidation quantity (in numbers): ${product.liquidationQty}\\n`;\n    }\n\n    index++;\n  }\n\n  summaryText += `\\n━━━━━━━━━━━━━━━━\\n\\n`;\n}\n\nsummaryText += `🙏 Thank you! Your submission has been recorded.\\n👋 Goodbye! Have a great day!`;\n\nreturn {\n  messaging_product: 'whatsapp',\n  to: phoneNumber,\n  type: 'text',\n  text: { body: summaryText }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        384
+      ],
+      "id": "767da946-8c21-417c-9ec3-e489c6998d7f",
+      "name": "Prepare Summary Message"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "phone_number",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.phoneNumber }}",
+              "type": "string"
+            },
+            {
+              "id": "id-2",
+              "name": "employee_name",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.employeeName }}",
+              "type": "string"
+            },
+            {
+              "id": "id-3",
+              "name": "hq",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.hq }}",
+              "type": "string"
+            },
+            {
+              "id": "id-4",
+              "name": "zone",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.zone }}",
+              "type": "string"
+            },
+            {
+              "id": "id-5",
+              "name": "area",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.area }}",
+              "type": "string"
+            },
+            {
+              "id": "id-6",
+              "name": "products",
+              "value": "={{ JSON.stringify($('Conversation State Manager').item.json.saveObject.products) }}",
+              "type": "string"
+            },
+            {
+              "id": "id-7",
+              "name": "created_at",
+              "value": "={{ new Date().toISOString().split('T')[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "id-8",
+              "name": "record_date",
+              "value": "={{ $('Conversation State Manager').item.json.saveObject.date }}",
+              "type": "string"
+            },
+            {
+              "id": "id-9",
+              "name": "existing_products",
+              "value": "={{ $('Load Existing Chat Logs').item.json.products || '[]' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "55a51290-621a-47e6-98d3-3c5c1f35761d",
+      "name": "Prepare Chat Log Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_logs (\n  phone_number,\n  employee_name,\n  hq,\n  zone,\n  area,\n  products,\n  created_at,\n  record_date\n)\nVALUES (\n  '{{ $json.phone_number }}',\n  '{{ $json.employee_name }}',\n  '{{ $json.hq }}',\n  '{{ $json.zone }}',\n  '{{ $json.area }}',\n  '{{ $json.products }}'::jsonb,\n  '{{ $json.created_at }}',\n  '{{ $json.record_date }}'\n);\n",
+        "options": {}
+      },
+      "id": "37928c77-45cf-4d69-9e40-7e30cab564f1",
+      "name": "Save Chat Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT \n  phone_number, \n  employee_name, \n  hq, \n  zone, \n  area, \n  products, \n  created_at, \n  record_date \nFROM chat_logs \nWHERE phone_number = regexp_replace(\n    '{{ ( $('Meta Webhook Trigger').item.json.WaId || $('Meta Webhook Trigger').item.json.phoneNumber || \"\" ).toString() }}',\n    '\\D', \n    '', \n    'g'\n  )\nAND record_date = '{{ $('Conversation State Manager').item.json.saveObject.date }}';\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        0
+      ],
+      "id": "11e6c3d4-a9b8-4a1f-b2b1-08b1f664a906",
+      "name": "Load Existing Chat Logs",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO users (phone_number, name, headquarter, zone, area)\nVALUES ('{{ $json.saveObject.phoneNumber }}', '{{ $json.saveObject.employeeName }}', '{{ $json.saveObject.hq }}', '{{ $json.saveObject.zone }}', '{{ $json.saveObject.area }}')\nON CONFLICT (phone_number) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        576
+      ],
+      "id": "a180f9f7-7d5c-48f4-b1c8-237053c37950",
+      "name": "Insert New User",
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ $('Meta Webhook Trigger').item.json.query['hub.challenge'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0ffd07cb-6cc6-4e38-b2a0-6151fe6227f7",
+      "name": "Check Request Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -3136,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the hub.challenge and hub.verify_token parameters from the webhook query string\nconst queryParams = $('Meta Webhook Trigger').item.json.query || {};\nconst challenge = queryParams['hub.challenge'];\nconst verifyToken = queryParams['hub.verify_token'];\n\n// Define your expected verify token (replace with your actual token)\nconst expectedToken = 'verify_tracker';\n\n// Validate the verify token before returning the challenge\nif (verifyToken !== expectedToken) {\n  throw new Error('Invalid verify token');\n}\n\n// Return the challenge value for Meta verification\nreturn [{ json: { challenge } }];"
+      },
+      "id": "2a706487-6e90-4684-8856-4023b06c0769",
+      "name": "Return Verification Challenge",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2912,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $('Return Verification Challenge').item.json.challenge }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "726be515-d967-42f5-b911-aac6ffe5a883",
+      "name": "Send Verification Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -2688,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT phone_number, name, headquarter, zone, area FROM users WHERE phone_number = '{{ $('Meta Webhook Trigger').item.json.body.entry[0].changes[0].value.messages[0].from }}' LIMIT 1",
+        "options": {}
+      },
+      "id": "b13247fc-2b6e-46ac-a937-491d5421034d",
+      "name": "Check User Exists",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1792,
+        384
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load user data from Check User Exists node\nconst userData = $('Check User Exists').first().json;\n\n// Extract phone number from webhook\nconst webhookData = $('Meta Webhook Trigger').first().json;\nconst msg = webhookData?.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];\n\nconst phoneNumber = msg?.from\n  ? msg.from.replace(/\\D/g, '')\n  : webhookData?.body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.wa_id.replace(/\\D/g, '');\n\n// Date options for UI\nconst dateOptions = ['Today', 'Yesterday', 'Custom Date'];\n\n// Create state\nconst state = {\n  phoneNumber,\n  currentStep: 'askDateSelection',\n  data: {\n    employeeName: userData.name || null,\n    hq: userData.headquarter || null,\n    zone: userData.zone || null,\n    area: userData.area || null,\n    selectedDate: null,\n    products: []\n  },\n  lastUpdated: new Date().toISOString()\n};\n\nreturn [{\n  json: {\n    phoneNumber,\n    nextQuestion: `👋 Welcome back, ${userData.name}!\\n📅 Select the date for this record:`,\n    buttons: dateOptions,\n    listOptions: null,\n    isComplete: false,\n    currentStep: 'askDateSelection',\n    stateToSave: state\n  }\n}];\n"
+      },
+      "id": "dd671a02-18e6-43f2-a0a8-ba74ea528f1a",
+      "name": "Load User Data to State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1568,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT EXISTS(\n  SELECT 1 FROM liquidation_records\n  WHERE phone_number = '{{ $json.phoneNumber }}'\n  AND record_date = '{{$json.stateToSave.data.selectedDate }}'\n  AND products @> '[{\"family\": \"{{ $json.family }}\", \"productName\": \"{{ $json.productName }}\", \"sku\": \"{{ $json.sku }}\"}]'::jsonb\n) AS product_exists;",
+        "options": {}
+      },
+      "id": "3e63efbc-84de-409e-8381-b424b5475e94",
+      "name": "Check Product Exists in Liquidation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -896,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ $json.needsProductCheck }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6c7a1a18-b2b9-4ef8-85cc-42b12168941a",
+      "name": "Check If Product Check Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the product existence check result from the database\nconst dbResult = $('Check Product Exists in Liquidation').first().json;\nconst productExists = dbResult.product_exists || false;\n\n// Get the conversation state from the previous node\nconst conversationData = $('Check If Product Check Needed').first().json;\nconst state = conversationData.stateToSave;\n\n// Store the product existence result in state\nstate.data._productExists = productExists;\n\n// Track if an overwrite will happen\nif (productExists) {\n  state.data._hasOverwrittenProducts = true;\n}\n\nstate.currentStep = 'handleProductExistsResult';\nstate.lastUpdated = new Date().toISOString();\n\n// Return state for saving and then asking the question\nreturn [{\n  json: {\n    phoneNumber: state.phoneNumber,\n    isComplete: false,\n    currentStep: 'handleProductExistsResult',\n    stateToSave: state\n  }\n}];"
+      },
+      "id": "97553d32-4e79-4264-baff-c1a0aa5a8399",
+      "name": "Process Product Check Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get state from previous node\nconst state = $json.stateToSave;\nconst productExists = state.data._productExists;\n\n// Helper function to build question with buttons\nfunction ask(question, options = null) {\n  const buttons = options && options.length <= 3 ? options : null;\n  let listOptions = null;\n\n  if (options && options.length > 3) {\n    listOptions = options.slice(0, 9);\n  }\n\n  return {\n    phoneNumber: state.phoneNumber,\n    nextQuestion: question,\n    buttons,\n    listOptions,\n    isComplete: false,\n    currentStep: state.currentStep,\n    stateToSave: state\n  };\n}\n\n// Generate the appropriate question based on product existence\nif (productExists) {\n  // Product already exists, update step to askOverwrite\n  state.currentStep = 'askOverwrite';\n  return [{ json: ask(\n    `⚠️ This product already exists in today's records.\\n\\nDo you want to overwrite it?`,\n    ['Yes', 'No']\n  )}];\n} else {\n  // Product doesn't exist, continue to opening stock\n  state.currentStep = 'askOpeningStock';\n  return [{ json: ask('📥 Enter Opening Stock (in numbers) 🔢') }];\n}"
+      },
+      "id": "502cfc0a-4b84-40ff-a8eb-0d385c0db336",
+      "name": "Prepare Next Question After Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=WITH old_products AS (SELECT jsonb_agg(p) AS products FROM jsonb_array_elements(COALESCE((SELECT products FROM liquidation_records WHERE phone_number='{{ $json.phoneNumber }}' AND record_date='{{ $json.saveObject.date }}'), '[]'::jsonb)) p WHERE (p->>'family', p->>'productName', p->>'sku') IN (SELECT (p2->>'family'), (p2->>'productName'), (p2->>'sku') FROM jsonb_array_elements('{{ JSON.stringify($json.saveObject.products) }}'::jsonb) p2 WHERE (p2->>'overwritten')::boolean = TRUE)), merged_products AS (SELECT jsonb_agg(p) AS products FROM (SELECT p FROM jsonb_array_elements(COALESCE((SELECT products FROM updated_record WHERE phone_number='{{ $json.phoneNumber }}' AND record_date='{{ $json.saveObject.date }}'), '[]'::jsonb)) p WHERE (p->>'family', p->>'productName', p->>'sku') NOT IN (SELECT (p2->>'family'), (p2->>'productName'), (p2->>'sku') FROM old_products, jsonb_array_elements(old_products.products) p2) UNION ALL SELECT p2 FROM old_products, jsonb_array_elements(old_products.products) p2) merged) INSERT INTO updated_record (phone_number, employee_name, hq, zone, area, products, created_at, record_date) SELECT '{{ $json.phoneNumber }}', '{{ $json.saveObject.employeeName }}', '{{ $json.saveObject.hq }}', '{{ $json.saveObject.zone }}', '{{ $json.saveObject.area }}', merged_products.products, NOW(), '{{ $json.saveObject.selectedDate }}' FROM merged_products ON CONFLICT (phone_number, record_date) DO UPDATE SET products = EXCLUDED.products, employee_name = EXCLUDED.employee_name, hq = EXCLUDED.hq, zone = EXCLUDED.zone, area = EXCLUDED.area, created_at = EXCLUDED.created_at",
+        "options": {}
+      },
+      "id": "0c20c83f-59d3-4f18-a61a-890f10035dff",
+      "name": "Save to Updated Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ $('Prepare Completion Message').item.json.saveObject.hasOverwrittenProducts.toBoolean() }}",
+              "rightValue": "false",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4492ef7d-09be-47b8-a7f0-9f019fbc70d1",
+      "name": "Check If Overwrite Occurred",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=WITH incoming_products AS (\n  SELECT jsonb_agg(p) AS products\n  FROM jsonb_array_elements('{{ JSON.stringify($json.saveObject.products) }}'::jsonb) p\n),\n\nmerged_products AS (\n  SELECT jsonb_agg(p) AS products\n  FROM (\n    -- 1️⃣ Remove old matching items\n    SELECT p\n    FROM jsonb_array_elements(\n      COALESCE((SELECT products FROM liquidation_records \n                WHERE phone_number='{{ $json.phoneNumber }}' \n                AND record_date='{{ $json.saveObject.date }}'),\n               '[]'::jsonb)\n    ) p\n    WHERE (p->>'family', p->>'productName', p->>'sku') NOT IN (\n      SELECT (p2->>'family'), (p2->>'productName'), (p2->>'sku')\n      FROM incoming_products, jsonb_array_elements(incoming_products.products) p2\n    )\n    \n    UNION ALL\n    \n    -- 2️⃣ Add new items (overwrite old ones)\n    SELECT p2\n    FROM incoming_products, jsonb_array_elements(incoming_products.products) p2\n  ) merged\n)\n\nINSERT INTO liquidation_records (\n  phone_number,\n  employee_name,\n  hq,\n  zone,\n  area,\n  products,\n  created_at,\n  record_date\n)\nSELECT\n  '{{ $json.phoneNumber }}',\n  '{{ $json.saveObject.employeeName }}',\n  '{{ $json.saveObject.hq }}',\n  '{{ $json.saveObject.zone }}',\n  '{{ $json.saveObject.area }}',\n  merged_products.products,\n (NOW() AT TIME ZONE 'Asia/Kolkata'),\n  '{{ $json.saveObject.date }}'\nFROM merged_products\n\nON CONFLICT (phone_number, record_date)\nDO UPDATE SET\n  products      = EXCLUDED.products,\n  employee_name = EXCLUDED.employee_name,\n  hq            = EXCLUDED.hq,\n  zone          = EXCLUDED.zone,\n  area          = EXCLUDED.area,\n  created_at    = EXCLUDED.created_at,\n  record_date   = EXCLUDED.record_date;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        384
+      ],
+      "id": "a8d4dbea-e6c1-4650-a1c0-5b28a9325bd1",
+      "name": "Insert into liquidation record",
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "noData",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1136,
+        736
+      ],
+      "id": "a5a8ddd3-749c-4650-bd95-3fab69ac0e6c",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const webhookData = $input.item.json;\nconst entry = webhookData.body?.entry?.[0];\nconst change = entry?.changes?.[0];\nconst value = change?.value;\nconst message = value?.messages?.[0];\n\n// Check if valid message event\nif (!message || !message.from || !message.id) {\n  console.log('❌ Not a valid message - skipping');\n  return [];\n}\n\n// Validate message type\nconst validTypes = ['text', 'interactive', 'button'];\nif (!validTypes.includes(message.type)) {\n  console.log(`❌ Invalid type: ${message.type}`);\n  return [];\n}\n\n// Check timestamp (reject >1 min old)\nconst messageTimestamp = parseInt(message.timestamp);\nconst currentTimestamp = Math.floor(Date.now() / 1000);\nconst ageInSeconds = currentTimestamp - messageTimestamp;\n\nif (ageInSeconds > 60) {\n  console.log(`⏰ Message too old: ${ageInSeconds}s`);\n  return [];\n}\n\n// Reject future messages\nif (ageInSeconds < -60) {\n  console.log(`⏰ Future message rejected`);\n  return [];\n}\n\n// Valid message\nreturn [{\n  json: {\n    messageId: message.id,\n    phoneNumber: message.from,\n    messageType: message.type,\n    messageAge: ageInSeconds,\n    webhookData: webhookData\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3136,
+        912
+      ],
+      "id": "14a45c43-10ad-48fc-bd36-ef6cf1f7cce5",
+      "name": "Message Validator Node"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO processed_messages (message_id, phone_number)\nVALUES ('{{ $json.messageId }}', '{{ $json.phoneNumber }}')\nON CONFLICT (message_id) DO NOTHING\nRETURNING message_id;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2944,
+        912
+      ],
+      "id": "53dba03d-8031-445e-8650-27e6985bce39",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "13f046ed-d850-4670-b8da-0af599fcbd7e",
+              "leftValue": "={{ $json.message_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2784,
+        912
+      ],
+      "id": "079459e0-fb03-4622-b146-06ab4850bcde",
+      "name": "Is New Message?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const validatorOutput = $('Message Validator Node').first().json;\nreturn [{ json: validatorOutput.webhookData }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2608,
+        912
+      ],
+      "id": "2ab4aa04-3588-4756-813a-e33615b1c831",
+      "name": "Extract Webhook Data"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT lr.employee_name, lr.hq, lr.zone, lr.area, lr.products as liquidation_products, ur.products as updated_products FROM liquidation_records lr LEFT JOIN updated_record ur ON lr.phone_number = ur.phone_number AND lr.record_date = ur.record_date WHERE lr.phone_number = '{{ $('Prepare Completion Message').item.json.phoneNumber }}' AND lr.record_date = '{{ $('Prepare Completion Message').item.json.saveObject.date }}'",
+        "options": {}
+      },
+      "id": "7eea94cb-ca32-4950-95b2-85da5fd5e13d",
+      "name": "Fetch Summary Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        384
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ $('Load Conversation State').item.json.seconds_since_update?.toNumber() }}",
+              "operator": {
+                "type": "number",
+                "operation": "exists"
+              }
+            },
+            {
+              "id": "id-2",
+              "leftValue": "={{ $('Load Conversation State').item.json.seconds_since_update?.toNumber() }}",
+              "rightValue": 600,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7074a2d1-91a2-42dd-a008-590f2fb55683",
+      "name": "Check Session Expired",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1936,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract phone number from Load Conversation State node\nconst conversationState = $('Load Conversation State').first().json;\nconst phoneNumber = conversationState.phone_number;\n\n// Create WhatsApp message payload with session expired notification\nconst payload = {\n  messaging_product: 'whatsapp',\n  to: phoneNumber,\n  type: 'text',\n  text: {\n    body: '⏰ Your session has expired due to inactivity (10 minutes).\\n\\n🔄 Please send any message to restart the conversation.'\n  }\n};\n\nreturn [{ json: payload }];"
+      },
+      "id": "40709a80-8084-4d17-b987-c96f7e7e7af4",
+      "name": "Prepare Session Expired Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v22.0/925047117349142/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "whatsAppApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "85e506df-96e5-45d3-a29d-4f6c60854f05",
+      "name": "Send Session Expired Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        896,
+        912
+      ],
+      "credentials": {
+        "whatsAppApi": {
+          "id": "B1uopzXoRmsyAROe",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=DELETE FROM conversation_states WHERE phone_number = '{{ $('Load Conversation State').item.json.phone_number }}';",
+        "options": {}
+      },
+      "id": "34ef9ef3-ef8f-49d5-9a84-5e0879c3b5bd",
+      "name": "Delete Expired Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1664,
+        1072
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT EXISTS (\n  SELECT 1\n  FROM \"TA_PhoneNumber\"\n  WHERE phone_number = regexp_replace(\n    '{{ $('Extract Webhook Data').item.json.body.entry[0].changes[0].value.messages[0].from }}',\n    '\\D',\n    '',\n    'g'\n  )\n) AS is_allowed;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2464,
+        912
+      ],
+      "id": "ec4ab0b3-23af-4875-87e2-7549170dcf2b",
+      "name": "Check If Authorized User",
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "29ef76a1-639d-454a-b6dc-4e25ff271d0e",
+              "leftValue": "={{ $('Check If Authorized User').item.json.is_allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2288,
+        928
+      ],
+      "id": "c5a97c76-ca2e-493a-ad4e-ed06d3fac001",
+      "name": "Is Authorized?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const webhookData = $('Extract Webhook Data').first().json;\nconst msg = webhookData.body.entry[0].changes[0].value.messages[0];\n\nconst phone = msg.from.replace(/\\D/g, '');\n\nreturn [{\n  json: {\n    messaging_product: \"whatsapp\",\n    to: phone,\n    type: \"text\",\n    text: {\n      body:\n\"🔒 Access Restricted\\n\\nThis WhatsApp number is used only for authorized inventory stock reporting.\\n\\n❌ You are not registered to use this service.\\n\\n📞 Please contact your administrator to get access.\"\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1856,
+        1232
+      ],
+      "id": "e14e10c3-b783-419c-8c69-a3c69a1561a1",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {
+    "Meta Webhook Trigger": [
+      {
+        "json": {}
+      }
+    ]
+  },
+  "connections": {
+    "Load Conversation State": {
+      "main": [
+        [
+          {
+            "node": "Check Session Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation State Manager": {
+      "main": [
+        [
+          {
+            "node": "Check If Product Check Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Response Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message (Buttons)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Completion Message": {
+      "main": [
+        [
+          {
+            "node": "Insert into liquidation record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insert New User",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check If Overwrite Occurred",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Conversation State": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Complete": {
+      "main": [
+        [
+          {
+            "node": "Prepare Completion Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Load Existing Chat Logs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Conversation State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Summary Message": {
+      "main": [
+        [
+          {
+            "node": "Send Final Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Chat Log Data": {
+      "main": [
+        [
+          {
+            "node": "Save Chat Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Chat Logs": {
+      "main": [
+        [
+          {
+            "node": "Prepare Chat Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meta Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Request Type",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Message Validator Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Request Type": {
+      "main": [
+        [
+          {
+            "node": "Return Verification Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Verification Challenge": {
+      "main": [
+        [
+          {
+            "node": "Send Verification Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check User Exists": {
+      "main": [
+        [
+          {
+            "node": "Load User Data to State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load User Data to State": {
+      "main": [
+        [
+          {
+            "node": "Conversation State Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Product Check Needed": {
+      "main": [
+        [
+          {
+            "node": "Check Product Exists in Liquidation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check If Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Product Exists in Liquidation": {
+      "main": [
+        [
+          {
+            "node": "Process Product Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Product Check Result": {
+      "main": [
+        [
+          {
+            "node": "Prepare Next Question After Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Next Question After Check": {
+      "main": [
+        [
+          {
+            "node": "Check If Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Overwrite Occurred": {
+      "main": [
+        [
+          {
+            "node": "Save to Updated Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Final Summary": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete Conversation State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message (Buttons)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message Validator Node": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Is New Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Message?": {
+      "main": [
+        [
+          {
+            "node": "Extract Webhook Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Webhook Data": {
+      "main": [
+        [
+          {
+            "node": "Check If Authorized User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert into liquidation record": {
+      "main": [
+        [
+          {
+            "node": "Fetch Summary Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Summary Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Summary Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Session Expired": {
+      "main": [
+        [
+          {
+            "node": "Prepare Session Expired Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete Expired Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check User Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Session Expired Message": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Session Expired Message": {
+      "main": [
+        [
+          {
+            "node": "Send Session Expired Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Authorized User": {
+      "main": [
+        [
+          {
+            "node": "Is Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Load Conversation State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message (Buttons)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "9179d2a9-ea77-4c45-af2b-e513c31ed11c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "97c90e1fe50b60852da9880332bfb4252626d5b9d922d54684f43ba7366b2eef"
+  },
+  "id": "AuQKHmZ9PCA267ti",
+  "tags": []
+}

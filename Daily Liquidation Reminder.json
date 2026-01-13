@@ -1,0 +1,272 @@
+{
+  "name": "Daily Liquidation Reminder - Template & Text",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT u.phone_number, u.name,\n       COALESCE(cs.last_updated, '1970-01-01'::timestamp) AS last_updated\nFROM users u\nLEFT JOIN liquidation_records lr \n  ON u.phone_number = lr.phone_number \n  AND lr.record_date = '{{ $json.targetDate }}'\nLEFT JOIN conversation_states cs \n  ON u.phone_number = cs.phone_number\nWHERE lr.phone_number IS NULL;",
+        "options": {}
+      },
+      "id": "aadf22b4-2d98-4e34-8a78-cbd05186c142",
+      "name": "Get Non-Submitters with Last Activity",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -672,
+        112
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "LoJQ1ROJwybHUGb1",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const lastUpdated = new Date($json.last_updated);\nconst now = new Date();\nconst hoursSinceLast = (now - lastUpdated) / (1000 * 60 * 60);\nconst within24h = hoursSinceLast < 24;\n\nconst name = $json.name || 'Team Member';\n\nreturn {\n  phone_number: $json.phone_number,\n  name,\n  formattedDate: $('Calculate Date').first().json.formattedDate,\n  within24h\n};"
+      },
+      "id": "d5d82d6c-7174-42ef-a931-f84576ecae74",
+      "name": "Check 24h Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const phone = $json.phone_number;\nconst name = $json.name;\n\nreturn {\n  messaging_product: \"whatsapp\",\n  to: phone,\n  type: \"text\",\n  text: {\n    body: `⏰ Hi ${name},\\n\\nFriendly reminder: You haven't submitted your liquidation stock record yet.\\n\\nPlease reply to this message to continue or start the submission.\\n\\nThank you!`\n  }\n};\n"
+      },
+      "id": "c1bcff00-f29a-48a0-b2ca-949ffe225144",
+      "name": "Prepare Free Text Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const phone = $json.phone_number;\n\nreturn {\n  messaging_product: \"whatsapp\",\n  to: phone,\n  type: \"template\",\n  template: {\n    name: \"liquidation_alert\",\n    language: { code: \"en\" }\n  }\n};"
+      },
+      "id": "5bcf6ef6-6f11-4557-b280-eb731fb18adc",
+      "name": "Prepare Template Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v22.0/925047117349142/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "EAAhEaQIYON8BP9is2b7b4yMtHIhZCxJbq4AXWLc4XDSK6KcUkJ7B8YZCp3M8xLknlNSckZCmeyj8lCrimw5aE5LDrMttamGMFZBBZA4nmzaaVL3IywwJ9CZBal6GZBmuSlcbvpkaED3MI6H5ZBiWeMYwZA9Bp4ArDU4Ex2UDBoBC4m51y2ew3YT79IDyP74p0dAZDZD"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "eca2fab4-9396-42bb-a310-160795603143",
+      "name": "Send Reminder Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        224,
+        112
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "IHPUi2VgpjyUX996",
+          "name": "Bearer Auth account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "id-1",
+              "leftValue": "={{ $('Check 24h Window').item.json.within24h }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e7f9acfe-ec6e-461c-96f4-5d07d2fc0efe",
+      "name": "IF Within 24h?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 16,
+              "minute": 30
+            }
+          ]
+        }
+      },
+      "id": "50d29d4c-ac1a-49eb-8073-507a0f7bc01b",
+      "name": "Cron Trigger (Daily)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        112
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\n\n\nconst targetDate = now.toISOString().split('T')[0]; // 2026-01-12 format\n\n// Indian readable format (DD-MM-YYYY)\nconst formattedDate = now.toLocaleDateString('en-GB', {\n  day: '2-digit',\n  month: '2-digit',\n  year: 'numeric'\n}).replace(/\\//g, '-'); // 12-01-2026\n\nreturn [{\n  json: {\n    targetDate,\n    formattedDate\n  }\n}];"
+      },
+      "id": "e471e133-da97-4230-8511-9f9d096ee6c4",
+      "name": "Calculate Date",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        112
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Non-Submitters with Last Activity": {
+      "main": [
+        [
+          {
+            "node": "Check 24h Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check 24h Window": {
+      "main": [
+        [
+          {
+            "node": "IF Within 24h?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Free Text Reminder": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Template Reminder": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Within 24h?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Free Text Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Template Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Trigger (Daily)": {
+      "main": [
+        [
+          {
+            "node": "Calculate Date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Date": {
+      "main": [
+        [
+          {
+            "node": "Get Non-Submitters with Last Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "151be46d-e331-41c8-b07c-296c2962565d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "97c90e1fe50b60852da9880332bfb4252626d5b9d922d54684f43ba7366b2eef"
+  },
+  "id": "0uJRNj2jx0hSgC97",
+  "tags": []
+}
