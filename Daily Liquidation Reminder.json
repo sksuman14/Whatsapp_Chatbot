@@ -53,7 +53,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const phone = $json.phone_number;\n\nreturn {\n  messaging_product: \"whatsapp\",\n  to: phone,\n  type: \"template\",\n  template: {\n    name: \"liquidation_alert\",\n    language: { code: \"en\" }\n  }\n};"
+        "jsCode": "const phone = $json.phone_number;\n\nreturn {\n  messaging_product: \"whatsapp\",\n  to: phone,\n  type: \"template\",\n  template: {\n    name: \"liquidation\",\n    language: { code: \"en\" }\n  }\n};"
       },
       "id": "5bcf6ef6-6f11-4557-b280-eb731fb18adc",
       "name": "Prepare Template Reminder",
@@ -171,7 +171,23 @@
       ]
     }
   ],
-  "pinData": {},
+  "pinData": {
+    "Prepare Template Reminder": [
+      {
+        "json": {
+          "messaging_product": "whatsapp",
+          "to": "919334383571",
+          "type": "template",
+          "template": {
+            "name": "liquidation",
+            "language": {
+              "code": "en"
+            }
+          }
+        }
+      }
+    ]
+  },
   "connections": {
     "Get Non-Submitters with Last Activity": {
       "main": [
@@ -262,7 +278,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "151be46d-e331-41c8-b07c-296c2962565d",
+  "versionId": "f24bb59a-3166-4781-9f34-568ec56fb296",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "97c90e1fe50b60852da9880332bfb4252626d5b9d922d54684f43ba7366b2eef"
